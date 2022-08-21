@@ -37,6 +37,16 @@ class ModelIOKeysMixin(object):
         return dict(pred=value)
 
 
+def mu_return(mu_torch, mode):
+    mu_numpy = mu_torch.detach().cpu().numpy()
+    if mode == 'raw':
+        return mu_numpy
+    elif mode == 'prob':
+        return np.minimum(1.0, np.maximum(0.0, mu_numpy + 0.5))
+    else:
+        raise NotImplementedError()
+
+
 class MLPModel(MLPLayer):
     def freeze_weights(self):
         for name, p in self.named_parameters():
@@ -44,18 +54,39 @@ class MLPModel(MLPLayer):
                 p.requires_grad = False
 
     def get_gates(self, mode):
-        if mode == 'raw':
-            return self.mu.detach().cpu().numpy()
-        elif mode == 'prob':
-            return np.minimum(1.0, np.maximum(0.0, self.mu.detach().cpu().numpy() + 0.5)) 
-        else:
-            raise NotImplementedError()
+        mu_return(self.mu, mode)
 
-class LSPINModel(MLPLayer):
-    def freeze_weights(self):
-        for name, p in self.named_parameters():
-            if name != 'mu':
-                p.requires_grad = False
+
+class LSPINModel(MLPModel):
+    def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims,
+                 device, batch_norm=None, dropout=None, activation='relu', sigma=1.0, lam=0.1):
+        super().__init__(input_dim, output_dim, hidden_dims, batch_norm=batch_norm, dropout=dropout,
+                         activation='identity')
+        self.FeatureSelector = GatingNet(input_dim, gating_net_hidden_dims, sigma,
+                                         device, activation=activation, batch_norm=batch_norm,
+                                         dropout=dropout)
+        self.reg = self.FeatureSelector.regularizer
+        self.lam = lam
+        # self.mu = self.FeatureSelector.mu
+        self.sigma = self.FeatureSelector.sigma
+
+    def forward(self, feed_dict):
+        x, mu = self.FeatureSelector(self._get_input(feed_dict))
+        pred = super().forward(x)
+        if self.training:
+            loss = self.loss(pred, self._get_label(feed_dict))
+            reg = torch.mean(self.reg((mu + 0.5) / self.sigma))
+            total_loss = loss + self.lam * reg
+            return total_loss, dict(), dict()
+        else:
+            return self._compose_output(pred)
+
+    def get_gates_lspin(self, mode, x):
+        mu = self.FeatureSelector.calc_mu(x)
+        mu_return(mu, mode)
+
+    def get_gates(self, mode):
+        raise NotImplementedError('Use get_gates_lspin(mode, x) instead')
 
 
 class L1RegressionModel(MLPModel, ModelIOKeysMixin):
@@ -129,81 +160,26 @@ class SoftThreshRegressionModel(MLPModel, ModelIOKeysMixin):
 
 
 class LSPINRegressionModel(LSPINModel, ModelIOKeysMixin):
-    def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims,
-                device, batch_norm=None, dropout=None,
-                activation='relu', sigma=1.0, lam=0.1):
-        super().__init__(input_dim, output_dim, hidden_dims,
-                         batch_norm=batch_norm, dropout=dropout, activation='identity')
-        #self.FeatureSelector = FeatureSelector(input_dim, sigma, device)
-        self.FeatureSelector = GatingNet(input_dim, gating_net_hidden_dims, sigma,
-                             device, activation=activation, batch_norm=batch_norm,
-                             dropout=dropout)
+    def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
+                 dropout=None, activation='relu', sigma=1.0, lam=0.1):
+        super().__init__(input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
+                         activation, sigma, lam)
         self.loss = nn.MSELoss()
-        self.reg = self.FeatureSelector.regularizer 
-        self.lam = lam
-        #self.mu = self.FeatureSelector.mu
-        self.sigma = self.FeatureSelector.sigma
 
-    def forward(self, feed_dict):
-        x, mu = self.FeatureSelector(self._get_input(feed_dict))
-        pred = super().forward(x)
-        if self.training:
-            loss = self.loss(pred, self._get_label(feed_dict))
-            reg = torch.mean(self.reg((mu + 0.5)/self.sigma)) 
-            total_loss = loss + self.lam * reg
-            return total_loss, dict(), dict()
-        else:
-            return self._compose_output(pred)
 
-    def get_gates(self, mode, x):
-        mu = self.FeatureSelector.calc_mu(x)
-        if mode == 'raw':
-            return mu.detach().cpu().numpy()
-        elif mode == 'prob':
-            return np.minimum(1.0, np.maximum(0.0, mu.detach().cpu().numpy() + 0.5)) 
-        else:
-            raise NotImplementedError()
-
-class LSPINClassificationModel(MLPModel, ModelIOKeysMixin):
+class LSPINClassificationModel(LSPINModel, ModelIOKeysMixin):
     def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims,
                  device, batch_norm=None, dropout=None,
                  activation='relu', sigma=1.0, lam=0.1):
-        super().__init__(input_dim, output_dim, hidden_dims,
-                         batch_norm=batch_norm, dropout=dropout, activation='identity')
-        self.FeatureSelector = GatingNet(input_dim, gating_net_hidden_dims, sigma,
-                                         device, activation=activation, batch_norm=batch_norm,
-                                         dropout=dropout)
+        super().__init__(input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
+                         activation, sigma, lam)
         self.softmax = nn.Softmax()
         self.loss = nn.CrossEntropyLoss()
-        self.reg = self.FeatureSelector.regularizer
-        self.lam = lam
-        # self.mu = self.FeatureSelector.mu
-        self.sigma = self.FeatureSelector.sigma
-
-    def forward(self, feed_dict):
-        x, mu = self.FeatureSelector(self._get_input(feed_dict))
-        logits = super().forward(x)
-        if self.training:
-            loss = self.loss(logits, self._get_label(feed_dict))
-            reg = torch.mean(self.reg((mu + 0.5) / self.sigma))
-            total_loss = loss + self.lam * reg
-            return total_loss, dict(), dict()
-        else:
-            return self._compose_output(logits)
 
     def _compose_output(self, logits):
         value = self.softmax(logits)
         _, pred = value.max(dim=1)
         return dict(prob=value, pred=pred, logits=logits)
-
-    def get_gates(self, mode, x):
-        mu = self.FeatureSelector.calc_mu(x)
-        if mode == 'raw':
-            return mu.detach().cpu().numpy()
-        elif mode == 'prob':
-            return np.minimum(1.0, np.maximum(0.0, mu.detach().cpu().numpy() + 0.5))
-        else:
-            raise NotImplementedError()
 
 
 class STGRegressionModel(MLPModel, ModelIOKeysMixin):
@@ -352,7 +328,3 @@ class LinearRegressionModel(MLPRegressionModel):
 class LinearClassificationModel(MLPClassificationModel):
     def __init__(self, input_dim, nr_classes):
         super().__init__(input_dim, nr_classes, [])
-
-
-
-    
