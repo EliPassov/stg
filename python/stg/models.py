@@ -54,7 +54,7 @@ class MLPModel(MLPLayer):
                 p.requires_grad = False
 
     def get_gates(self, mode):
-        mu_return(self.mu, mode)
+        return mu_return(self.mu, mode)
 
 
 class LSPINModel(MLPModel):
@@ -83,7 +83,7 @@ class LSPINModel(MLPModel):
 
     def get_gates_lspin(self, mode, x):
         mu = self.FeatureSelector.calc_mu(x)
-        mu_return(mu, mode)
+        return mu_return(mu, mode)
 
     def get_gates(self, mode):
         raise NotImplementedError('Use get_gates_lspin(mode, x) instead')
