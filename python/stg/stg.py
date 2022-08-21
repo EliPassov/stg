@@ -1,17 +1,23 @@
+import logging
+import logging.config
+import os.path as osp
+import time
+
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from .models import STGClassificationModel, STGRegressionModel, MLPClassificationModel, MLPRegressionModel, STGCoxModel, MLPCoxModel, L1RegressionModel, SoftThreshRegressionModel, L1GateRegressionModel, LSPINRegressionModel, LSPINClassificationModel
-from .utils import get_optimizer, as_tensor, as_float, as_numpy, as_cpu, SimpleDataset, FastTensorDataLoader, probe_infnan
-from .io import load_state_dict, state_dict
-from .meter import GroupMeters
-from .losses import calc_concordance_index, PartialLogLikelihood
 
-import logging.config 
-import os.path as osp
-import time
-import numpy as np
-import logging
+from .io import load_state_dict, state_dict
+from .losses import calc_concordance_index, PartialLogLikelihood
+from .meter import GroupMeters
+from .models import STGClassificationModel, STGRegressionModel, MLPClassificationModel, MLPRegressionModel, \
+    STGCoxModel, MLPCoxModel, L1RegressionModel, SoftThreshRegressionModel, L1GateRegressionModel,  \
+    LSPINRegressionModel, LSPINClassificationModel
+from .utils import get_optimizer, as_tensor, as_float, as_numpy, as_cpu, SimpleDataset, FastTensorDataLoader, \
+    probe_infnan
+
+
 logger = logging.getLogger("my-logger")
 
 
@@ -55,7 +61,7 @@ class STG(object):
     def __init__(self, device, input_dim=784, output_dim=10, hidden_dims=[400, 200],
                 activation='relu', sigma=0.5, lam=0.1,
                 optimizer='Adam', learning_rate=1e-5,  batch_size=100, freeze_onward=None, feature_selection=True, weight_decay=1e-3, 
-                task_type='classification', report_maps=False, random_state=1, extra_args=None):
+                task_type='classification', report_maps=False, random_state=1, extra_args=None, dropout=None):
         self.batch_size = batch_size
         self.activation = activation
         self.device = self.get_device(device)
@@ -64,23 +70,27 @@ class STG(object):
         self.extra_args = extra_args
         self.freeze_onward = freeze_onward
         self._model = self.build_model(input_dim, output_dim, hidden_dims, activation, sigma, lam, 
-                                       task_type, feature_selection)
-        #self._model.apply(self.init_weights)
-        self._model = self._model.to(device)
+                                       task_type, feature_selection, dropout)
+        # self._model.apply(self.init_weights)
+        self._model = self._model.to(self.device)
         self._optimizer = get_optimizer(optimizer, self._model, lr=learning_rate, weight_decay=weight_decay)
     
     def get_device(self, device):
-        if device == "cpu":
+        if isinstance(device, torch.device):
+            pass
+        elif device == "cpu":
             device = torch.device("cpu")
-        elif device == None:
+        elif 'cuda' in device:
+            device = torch.device(device)
+        elif device is None:
             args_cuda = torch.cuda.is_available()
-            device = device = torch.device("cuda" if args_cuda else "cpu")
+            device = torch.device("cuda" if args_cuda else "cpu")
         else:
             raise NotImplementedError("Only 'cpu' or 'cuda' is a valid option.")
         return device
-        
-        
-    def init_weights(self, m):
+
+    @staticmethod
+    def init_weights(m):
         if isinstance(m, nn.Linear):
             stddev = torch.tensor(0.1)
             shape = m.weight.shape
@@ -88,13 +98,13 @@ class STG(object):
                                   sample_shape=shape))
             torch.nn.init.zeros_(m.bias)
 
-    def build_model(self, input_dim, output_dim, hidden_dims, activation, sigma, lam, task_type, feature_selection):
+    def build_model(self, input_dim, output_dim, hidden_dims, activation, sigma, lam, task_type, feature_selection, dropout=None):
         if task_type == 'classification':
             self.metric = nn.CrossEntropyLoss()
-            self.tensor_names = ('input','label')
+            self.tensor_names = ('input', 'label')
             if feature_selection:
-                if 'gating_net_hidden_dims' in self.extra_args:
-                    return LSPINClassificationModel(input_dim, output_dim, hidden_dims, 
+                if self.extra_args is not None and 'gating_net_hidden_dims' in self.extra_args:
+                    return LSPINClassificationModel(input_dim, output_dim, hidden_dims,
                         gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
                         device=self.device, activation=activation, sigma=sigma, lam=lam)
                 else:
@@ -118,11 +128,11 @@ class STG(object):
             '''
             if feature_selection:
                 if 'gating_net_hidden_dims' in self.extra_args:
-                    return LSPINRegressionModel(input_dim, output_dim, hidden_dims, 
+                    return LSPINRegressionModel(input_dim, output_dim, hidden_dims,
                         gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
                         device=self.device, activation=activation, sigma=sigma, lam=lam)
                 else:
-                    return STGRegressionModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam)
+                    return STGRegressionModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
             else:
                 return MLPRegressionModel(input_dim, output_dim, hidden_dims, activation=activation)
         elif task_type == 'cox':
@@ -144,7 +154,7 @@ class STG(object):
         self._optimizer.step()
         #probe_infnan(logits, 'logits')
         if self.task_type=='cox':
-            ci = calc_concordance_index(logits.detach().numpy(), 
+            ci = calc_concordance_index(logits.detach().numpy(),
                     feed_dict['E'].detach().numpy(), feed_dict['T'].detach().numpy())
         #if self.extra_args=='l1-softthresh':
         #    self._model.mlp[0][0].weight.data = self._model.prox_op(self._model.mlp[0][0].weight)
@@ -156,20 +166,26 @@ class STG(object):
                 meters.update(CI=ci)
             meters.update(monitors)
 
-    def get_dataloader(self, X, y, shuffle):
+    def get_dataloader(self, X, y, shuffle, is_tensor_input=False):
+        if not is_tensor_input:
+            if self.task_type == 'cox':
+                raise 'Task cox does not support tensor input for y vector'
+            X = torch.from_numpy(X)
+            y = torch.from_numpy(y)
+        X = X.float()
         if self.task_type == 'classification':
-            data_loader = FastTensorDataLoader(torch.from_numpy(X).float().to(self.device), 
-                        torch.from_numpy(y).long().to(self.device), tensor_names=self.tensor_names,
+            data_loader = FastTensorDataLoader(X.to(self.device),
+                        y.long().to(self.device), tensor_names=self.tensor_names,
                         batch_size=self.batch_size, shuffle=shuffle)
 
         elif self.task_type == 'regression':
-            data_loader = FastTensorDataLoader(torch.from_numpy(X).float().to(self.device), 
-                        torch.from_numpy(y).float().to(self.device), tensor_names=self.tensor_names,
+            data_loader = FastTensorDataLoader(X.to(self.device),
+                        y.float().to(self.device), tensor_names=self.tensor_names,
                         batch_size=self.batch_size, shuffle=shuffle)
 
         elif self.task_type == 'cox':
             assert isinstance(y, dict)
-            data_loader = FastTensorDataLoader(torch.from_numpy(X).float().to(self.device), 
+            data_loader = FastTensorDataLoader(X.to(self.device),
                         torch.from_numpy(y['E']).float().to(self.device),
                         torch.from_numpy(y['T']).float().to(self.device),
                         tensor_names=self.tensor_names,
@@ -181,29 +197,28 @@ class STG(object):
         return data_loader 
 
     def fit(self, X, y, nr_epochs, valid_X=None, valid_y=None, 
-        verbose=True, meters=None, early_stop=None, print_interval=1, shuffle=False):
-        data_loader = self.get_dataloader(X, y, shuffle)
+        verbose=True, meters=None, early_stop=None, print_interval=1, shuffle=False, is_tensor_input=False):
+        data_loader = self.get_dataloader(X, y, shuffle, is_tensor_input)
 
         if valid_X is not None:
-            val_data_loader = self.get_dataloader(valid_X, valid_y, shuffle)
+            val_data_loader = self.get_dataloader(valid_X, valid_y, shuffle, is_tensor_input)
         else:
             val_data_loader = None
         self.train(data_loader, nr_epochs, val_data_loader, verbose, meters, early_stop, print_interval)
 
-    def evaluate(self, X, y):
-        data_loader = self.get_dataloader(X, y, shuffle=None)
+    def evaluate(self, X, y, is_tensor_input=False):
+        data_loader = self.get_dataloader(X, y, shuffle=False, is_tensor_input=is_tensor_input)
         meters = GroupMeters()
         self.validate(data_loader, self.metric, meters, mode='test')
         print(meters.format_simple(''))
 
     def predict(self, X, verbose=True):
         dataset = SimpleDataset(X)
-        data_loader = DataLoader(dataset, batch_size=X.shape[0], shuffle=False) 
+        data_loader = DataLoader(dataset, batch_size=X.shape[0], shuffle=False)
         res = []
         self._model.eval()
         for feed_dict in data_loader:
-            feed_dict_np = as_numpy(feed_dict)
-            feed_dict = as_tensor(feed_dict)
+            feed_dict = dict(input=as_tensor(feed_dict)['input'].to(self.device))
             with torch.no_grad():
                 output_dict = self._model(feed_dict)
             output_dict_np = as_numpy(output_dict)
@@ -253,7 +268,7 @@ class STG(object):
             
         elif self.task_type == 'cox':
             result = metric(pred['logits'], self._model._get_fail_indicator(feed_dict), 'noties') 
-            val_CI = calc_concordance_index(pred['logits'].detach().numpy(), 
+            val_CI = calc_concordance_index(pred['logits'].detach().numpy(),
                     feed_dict['E'].detach().numpy(), feed_dict['T'].detach().numpy())
             result = as_float(result)
         else:
@@ -318,4 +333,3 @@ class STG(object):
             return self._model.get_gates(mode, x)
         else:
             return self._model.get_gates(mode)
-

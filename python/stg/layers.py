@@ -1,11 +1,15 @@
-import torch.nn as nn
-import torch
 import math
+
+import torch
+import torch.nn as nn
+
 from .utils import get_batcnnorm, get_dropout, get_activation
+
 
 __all__ = [
     'LinearLayer', 'MLPLayer', 'FeatureSelector',
 ]
+
 
 class FeatureSelector(nn.Module):
     def __init__(self, input_dim, sigma, device):
@@ -95,7 +99,7 @@ class LinearLayer(nn.Sequential):
             modules.append(get_batcnnorm(batch_norm, out_features, 1))
         if dropout is not None and dropout is not False:
             modules.append(get_dropout(dropout, 1))
-        if activation is not None and activation is not False:
+        if activation is not None and activation is not False and activation != 'none':
             modules.append(get_activation(activation))
         super().__init__(*modules)
 

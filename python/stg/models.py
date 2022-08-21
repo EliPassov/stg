@@ -1,12 +1,13 @@
-import torch.nn as nn
-import torch
 import math
-import numpy as np
-from torch.autograd import Variable
 
+import numpy as np
+import torch
+from torch.autograd import Variable
+import torch.nn as nn
 
 from .layers import MLPLayer, FeatureSelector, GatingLayer, GatingNet
 from .losses import PartialLogLikelihood
+
 
 __all__ = ['MLPModel', 'MLPRegressionModel', 'MLPClassificationModel',
           'LinearRegressionModel', 'LinearClassificationModel',
@@ -164,7 +165,46 @@ class LSPINRegressionModel(LSPINModel, ModelIOKeysMixin):
             raise NotImplementedError()
 
 class LSPINClassificationModel(MLPModel, ModelIOKeysMixin):
-    pass
+    def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims,
+                 device, batch_norm=None, dropout=None,
+                 activation='relu', sigma=1.0, lam=0.1):
+        super().__init__(input_dim, output_dim, hidden_dims,
+                         batch_norm=batch_norm, dropout=dropout, activation='identity')
+        self.FeatureSelector = GatingNet(input_dim, gating_net_hidden_dims, sigma,
+                                         device, activation=activation, batch_norm=batch_norm,
+                                         dropout=dropout)
+        self.softmax = nn.Softmax()
+        self.loss = nn.CrossEntropyLoss()
+        self.reg = self.FeatureSelector.regularizer
+        self.lam = lam
+        # self.mu = self.FeatureSelector.mu
+        self.sigma = self.FeatureSelector.sigma
+
+    def forward(self, feed_dict):
+        x, mu = self.FeatureSelector(self._get_input(feed_dict))
+        logits = super().forward(x)
+        if self.training:
+            loss = self.loss(logits, self._get_label(feed_dict))
+            reg = torch.mean(self.reg((mu + 0.5) / self.sigma))
+            total_loss = loss + self.lam * reg
+            return total_loss, dict(), dict()
+        else:
+            return self._compose_output(logits)
+
+    def _compose_output(self, logits):
+        value = self.softmax(logits)
+        _, pred = value.max(dim=1)
+        return dict(prob=value, pred=pred, logits=logits)
+
+    def get_gates(self, mode, x):
+        mu = self.FeatureSelector.calc_mu(x)
+        if mode == 'raw':
+            return mu.detach().cpu().numpy()
+        elif mode == 'prob':
+            return np.minimum(1.0, np.maximum(0.0, mu.detach().cpu().numpy() + 0.5))
+        else:
+            raise NotImplementedError()
+
 
 class STGRegressionModel(MLPModel, ModelIOKeysMixin):
     def __init__(self, input_dim, output_dim, hidden_dims, device, batch_norm=None, dropout=None, activation='relu',
