@@ -141,3 +141,50 @@ class MLPLayer(nn.Module):
         if self.flatten:
             input = input.view(input.size(0), -1)
         return self.mlp(input)
+
+
+class MLPLayerEncoder(MLPLayer):
+    def __init__(self, input_dim, encoder_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu', flatten=True):
+        super().__init__()
+
+        if hidden_dims is None:
+            hidden_dims = []
+        elif type(hidden_dims) is int:
+            hidden_dims = [hidden_dims]
+
+        dims = [input_dim]
+        dims.extend(hidden_dims)
+        dims.append(encoder_dim)
+        nr_hiddens = len(hidden_dims)
+
+        modules = []
+        for i in range(nr_hiddens):
+            layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
+            modules.append(layer)
+        layer = nn.Linear(dims[-2], dims[-1], bias=True)
+        modules.append(layer)
+        self.encoder = nn.Sequential(*modules)
+
+        modules = []
+        for i in range(nr_hiddens-1, -1, -1):
+            layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
+            modules.append(layer)
+        layer = nn.Linear(dims[1], dims[0], bias=True)
+        modules.append(layer)
+        self.decoder = nn.Sequential(*modules)
+
+        self.flatten = flatten
+
+    def encode(self, input):
+        if self.flatten:
+            input = input.view(input.size(0), -1)
+        return self.encoder(input)
+
+    def decode(self, encoding):
+        return self.decoder(encoding)
+
+    def forward(self, input):
+        if self.flatten:
+            input = input.view(input.size(0), -1)
+
+        return self.decode(self.encode(input))
