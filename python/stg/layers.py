@@ -143,8 +143,8 @@ class MLPLayer(nn.Module):
         return self.mlp(input)
 
 
-class MLPLayerEncoder(MLPLayer):
-    def __init__(self, input_dim, encoder_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu', flatten=True):
+class MLPLayerEncoder(nn.Module):
+    def __init__(self, input_dim, encoding_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu', flatten=True):
         super().__init__()
 
         if hidden_dims is None:
@@ -154,7 +154,7 @@ class MLPLayerEncoder(MLPLayer):
 
         dims = [input_dim]
         dims.extend(hidden_dims)
-        dims.append(encoder_dim)
+        dims.append(encoding_dim)
         nr_hiddens = len(hidden_dims)
 
         modules = []
@@ -166,8 +166,8 @@ class MLPLayerEncoder(MLPLayer):
         self.encoder = nn.Sequential(*modules)
 
         modules = []
-        for i in range(nr_hiddens-1, -1, -1):
-            layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
+        for i in range(nr_hiddens + 1, 1, -1):
+            layer = LinearLayer(dims[i], dims[i-1], batch_norm=batch_norm, dropout=dropout, activation=activation)
             modules.append(layer)
         layer = nn.Linear(dims[1], dims[0], bias=True)
         modules.append(layer)
@@ -187,4 +187,7 @@ class MLPLayerEncoder(MLPLayer):
         if self.flatten:
             input = input.view(input.size(0), -1)
 
-        return self.decode(self.encode(input))
+        encoding = self.encode(input)
+        out = self.decode(encoding)
+
+        return out

@@ -188,10 +188,10 @@ class LSPINClassificationModel(LSPINModel, ModelIOKeysMixin):
         return dict(prob=value, pred=pred, logits=logits)
 
 
-class LSPEncoderModel(LSPINModel, ModelIOKeysMixin):
-    def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
+class LSPINEncoderModel(LSPINModel, ModelIOKeysMixin):
+    def __init__(self, input_dim, encoding_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
                  dropout=None, activation='relu', sigma=1.0, lam=0.1):
-        super().__init__(input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
+        super().__init__(input_dim, encoding_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
                          activation, sigma, lam, model_type='encoder')
         self.loss = nn.MSELoss()
 

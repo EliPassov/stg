@@ -13,7 +13,7 @@ from .losses import calc_concordance_index, PartialLogLikelihood
 from .meter import GroupMeters
 from .models import STGClassificationModel, STGRegressionModel, MLPClassificationModel, MLPRegressionModel, \
     STGCoxModel, MLPCoxModel, L1RegressionModel, SoftThreshRegressionModel, L1GateRegressionModel,  \
-    LSPINRegressionModel, LSPINClassificationModel
+    LSPINRegressionModel, LSPINClassificationModel, LSPINEncoderModel
 from .utils import get_optimizer, as_tensor, as_float, as_numpy, as_cpu, SimpleDataset, FastTensorDataLoader, \
     probe_infnan
 
@@ -114,7 +114,7 @@ class STG(object):
         elif task_type == 'regression':
             assert output_dim == 1
             self.metric = nn.MSELoss()
-            self.tensor_names = ('input','label')
+            self.tensor_names = ('input', 'label')
             '''
             if self.extra_args is not None:
                 if self.extra_args == 'l1-softthresh':
@@ -135,6 +135,19 @@ class STG(object):
                     return STGRegressionModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
             else:
                 return MLPRegressionModel(input_dim, output_dim, hidden_dims, activation=activation)
+        elif task_type == 'encoding':
+            self.metric = nn.MSELoss()
+            # TODO: Clean this up
+            self.tensor_names = ('input', 'label')
+            if feature_selection:
+                if 'gating_net_hidden_dims' in self.extra_args:
+                    return LSPINEncoderModel(input_dim, output_dim, hidden_dims,
+                        gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
+                        device=self.device, activation=activation, sigma=sigma, lam=lam)
+                else:
+                    raise NotImplementedError('Encoding is only implemented for LSPIN model')
+            else:
+                raise NotImplementedError('Encoding is only implemented for LSPIN model')
         elif task_type == 'cox':
             self.metric = PartialLogLikelihood
             self.tensor_names = ('X', 'E', 'T')
@@ -181,6 +194,11 @@ class STG(object):
         elif self.task_type == 'regression':
             data_loader = FastTensorDataLoader(X.to(self.device),
                         y.float().to(self.device), tensor_names=self.tensor_names,
+                        batch_size=self.batch_size, shuffle=shuffle)
+
+        elif self.task_type == 'encoding':
+        # TODO: Refactor to account for no y
+            data_loader = FastTensorDataLoader(X.to(self.device), X.to(self.device), tensor_names=self.tensor_names,
                         batch_size=self.batch_size, shuffle=shuffle)
 
         elif self.task_type == 'cox':
@@ -265,7 +283,8 @@ class STG(object):
             result = metric(pred['logits'], self._model._get_label(feed_dict))
         elif self.task_type == 'regression':
             result = metric(pred['pred'], self._model._get_label(feed_dict))
-            
+        elif self.task_type == 'encoding':
+            result = metric(pred['pred'], self._model._get_label(feed_dict))
         elif self.task_type == 'cox':
             result = metric(pred['logits'], self._model._get_fail_indicator(feed_dict), 'noties') 
             val_CI = calc_concordance_index(pred['logits'].detach().numpy(),
