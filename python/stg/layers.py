@@ -1,4 +1,6 @@
+import inspect
 import math
+from types import LambdaType
 
 import torch
 import torch.nn as nn
@@ -109,8 +111,35 @@ class LinearLayer(nn.Sequential):
                 module.reset_parameters()
 
 
+class LambdaModule(nn.Module):
+    def __init__(self, lambda_function: LambdaType):
+        super().__init__()
+        import types
+        assert isinstance(lambda_function, LambdaType)
+        self.lambda_function = lambda_function
+
+    def extra_repr(self) -> str:
+        return inspect.getsource(self.lambda_function).replace('\n', '')
+
+    def __repr__(self):
+        return self.extra_repr()
+
+    def forward(self, x):
+        return self.lambda_function(x)
+
+
+ViewLayer = LambdaModule(lambda x, shape_tuple: x.view(shape_tuple))
+# double lambda, external for allowing dynamic passing of the split dim, and internal as the input for LambdaModule
+# This splits a 2D batch x features vector into a 3D batch/split x split x features vector
+BatchSplit = lambda recurrent_split_dim: LambdaModule(lambda x: x.view(x.shape[0] // recurrent_split_dim, -1, x.shape[-1]))
+BatchFlatten = LambdaModule(lambda x: x.view(-1, x.shape[-1]))
+# For Rnn Output
+FirstOfTuple = LambdaModule(lambda x: x[0])
+
+
 class MLPLayer(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu', flatten=True):
+    def __init__(self, input_dim, output_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu',
+                 flatten=True, recurrent_split_dim=None):
         super().__init__()
 
         if hidden_dims is None:
@@ -118,17 +147,28 @@ class MLPLayer(nn.Module):
         elif type(hidden_dims) is int:
             hidden_dims = [hidden_dims]
 
+        assert (recurrent_split_dim is None) or (recurrent_split_dim > 1), "recurrent_split_dim must be None or int > 1"
+        self.recurrent = recurrent_split_dim is not None
+
         dims = [input_dim]
         dims.extend(hidden_dims)
         dims.append(output_dim)
         modules = []
 
+        if self.recurrent:
+            modules.append(BatchSplit(recurrent_split_dim))
+
         nr_hiddens = len(hidden_dims)
         for i in range(nr_hiddens):
-            layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation) 
+            if self.recurrent:
+                layer = nn.Sequential(nn.GRU(dims[i], dims[i+1], dropout=0 if dropout is None else dropout, batch_first=True), FirstOfTuple)
+            else:
+                layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
             modules.append(layer)
         layer = nn.Linear(dims[-2], dims[-1], bias=True)
         modules.append(layer)
+        if self.recurrent:
+            modules.append(BatchFlatten)
         self.mlp = nn.Sequential(*modules)
         self.flatten = flatten
 
@@ -144,8 +184,12 @@ class MLPLayer(nn.Module):
 
 
 class MLPLayerEncoder(nn.Module):
-    def __init__(self, input_dim, encoding_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu', flatten=True):
+    def __init__(self, input_dim, encoding_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu',
+                 flatten=True, recurrent_split_dim=None):
         super().__init__()
+
+        assert (recurrent_split_dim is None) or (recurrent_split_dim > 1), "recurrent_split_dim must be None or int > 1"
+        self.recurrent = recurrent_split_dim is not None
 
         if hidden_dims is None:
             hidden_dims = []
@@ -158,8 +202,13 @@ class MLPLayerEncoder(nn.Module):
         nr_hiddens = len(hidden_dims)
 
         modules = []
+        if self.recurrent:
+            modules.append(BatchSplit(recurrent_split_dim))
         for i in range(nr_hiddens):
-            layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
+            if self.recurrent:
+                layer = nn.Sequential(nn.GRU(dims[i], dims[i+1], dropout=0 if dropout is None else dropout, batch_first=True), FirstOfTuple)
+            else:
+                layer = LinearLayer(dims[i], dims[i+1], batch_norm=batch_norm, dropout=dropout, activation=activation)
             modules.append(layer)
         layer = nn.Linear(dims[-2], dims[-1], bias=True)
         modules.append(layer)
@@ -167,10 +216,19 @@ class MLPLayerEncoder(nn.Module):
 
         modules = []
         for i in range(nr_hiddens + 1, 1, -1):
-            layer = LinearLayer(dims[i], dims[i-1], batch_norm=batch_norm, dropout=dropout, activation=activation)
+            if self.recurrent:
+                layer = nn.Sequential(nn.GRU(dims[i], dims[i-1], dropout=0 if dropout is None else dropout, batch_first=True), FirstOfTuple)
+            else:
+                layer = LinearLayer(dims[i], dims[i-1], batch_norm=batch_norm, dropout=dropout, activation=activation)
             modules.append(layer)
-        layer = nn.Linear(dims[1], dims[0], bias=True)
-        modules.append(layer)
+        if self.recurrent:
+            layer = nn.Sequential(nn.GRU(dims[1], dims[0], batch_first=True), FirstOfTuple)
+            modules.append(layer)
+            modules.append(BatchFlatten)
+        else:
+            layer = nn.Linear(dims[1], dims[0], bias=True)
+            modules.append(layer)
+
         self.decoder = nn.Sequential(*modules)
 
         self.flatten = flatten

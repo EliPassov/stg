@@ -60,8 +60,8 @@ def _standard_truncnorm_sample(lower_bound, upper_bound, sample_shape=torch.Size
 class STG(object):
     def __init__(self, device, input_dim=784, output_dim=10, hidden_dims=[400, 200],
                 activation='relu', sigma=0.5, lam=0.1,
-                optimizer='Adam', learning_rate=1e-5,  batch_size=100, freeze_onward=None, feature_selection=True, weight_decay=1e-3, 
-                task_type='classification', report_maps=False, random_state=1, extra_args=None, dropout=None):
+                optimizer='Adam', learning_rate=1e-5,  batch_size=100, freeze_onward=None, feature_selection=True, weight_decay=1e-3,
+                task_type='classification', report_maps=False, random_state=1, extra_args=None, dropout=None, recurrent_split_dim=None):
         self.batch_size = batch_size
         self.activation = activation
         self.device = self.get_device(device)
@@ -69,8 +69,9 @@ class STG(object):
         self.task_type = task_type
         self.extra_args = extra_args
         self.freeze_onward = freeze_onward
+        self.has_feature_selection = feature_selection is not None
         self._model = self.build_model(input_dim, output_dim, hidden_dims, activation, sigma, lam, 
-                                       task_type, feature_selection, dropout)
+                                       task_type, feature_selection, dropout, recurrent_split_dim)
         # self._model.apply(self.init_weights)
         self._model = self._model.to(self.device)
         self._optimizer = get_optimizer(optimizer, self._model, lr=learning_rate, weight_decay=weight_decay)
@@ -98,7 +99,8 @@ class STG(object):
                                   sample_shape=shape))
             torch.nn.init.zeros_(m.bias)
 
-    def build_model(self, input_dim, output_dim, hidden_dims, activation, sigma, lam, task_type, feature_selection, dropout=None):
+    def build_model(self, input_dim, output_dim, hidden_dims, activation, sigma, lam, task_type, feature_selection,
+                    dropout=None, recurrent_split_dim=None):
         if task_type == 'classification':
             self.metric = nn.CrossEntropyLoss()
             self.tensor_names = ('input', 'label')
@@ -106,11 +108,12 @@ class STG(object):
                 if self.extra_args is not None and 'gating_net_hidden_dims' in self.extra_args:
                     return LSPINClassificationModel(input_dim, output_dim, hidden_dims,
                         gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
-                        device=self.device, activation=activation, sigma=sigma, lam=lam)
+                        device=self.device, activation=activation, sigma=sigma, lam=lam,
+                        recurrent_split_dim=recurrent_split_dim, dropout=dropout)
                 else:
-                    return STGClassificationModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam)
+                    return STGClassificationModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
             else:
-                return MLPClassificationModel(input_dim, output_dim, hidden_dims, activation=activation)
+                return MLPClassificationModel(input_dim, output_dim, hidden_dims, activation=activation, dropout=dropout)
         elif task_type == 'regression':
             assert output_dim == 1
             self.metric = nn.MSELoss()
@@ -130,11 +133,11 @@ class STG(object):
                 if 'gating_net_hidden_dims' in self.extra_args:
                     return LSPINRegressionModel(input_dim, output_dim, hidden_dims,
                         gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
-                        device=self.device, activation=activation, sigma=sigma, lam=lam)
+                        device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
                 else:
                     return STGRegressionModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
             else:
-                return MLPRegressionModel(input_dim, output_dim, hidden_dims, activation=activation)
+                return MLPRegressionModel(input_dim, output_dim, hidden_dims, activation=activation, dropout=dropout)
         elif task_type == 'encoding':
             self.metric = nn.MSELoss()
             # TODO: Clean this up
@@ -143,7 +146,7 @@ class STG(object):
                 if 'gating_net_hidden_dims' in self.extra_args:
                     return LSPINEncoderModel(input_dim, output_dim, hidden_dims,
                         gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'],
-                        device=self.device, activation=activation, sigma=sigma, lam=lam)
+                        device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
                 else:
                     raise NotImplementedError('Encoding is only implemented for LSPIN model')
             else:
@@ -152,9 +155,9 @@ class STG(object):
             self.metric = PartialLogLikelihood
             self.tensor_names = ('X', 'E', 'T')
             if feature_selection:
-                return STGCoxModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam)
+                return STGCoxModel(input_dim, output_dim, hidden_dims, device=self.device, activation=activation, sigma=sigma, lam=lam, dropout=dropout)
             else:
-                return MLPCoxModel(input_dim, output_dim, hidden_dims, activation=activation)
+                return MLPCoxModel(input_dim, output_dim, hidden_dims, activation=activation, dropout=dropout)
         else:
             raise NotImplementedError()
 

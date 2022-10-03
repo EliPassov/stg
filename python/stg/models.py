@@ -59,13 +59,13 @@ class MLPModel(MLPLayer):
 
 class LSPINModel(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
-                 dropout=None, activation='relu', sigma=1.0, lam=0.1, model_type='mlp'):
+                 dropout=None, activation='relu', sigma=1.0, lam=0.1, model_type='mlp', recurrent_split_dim=None):
         super().__init__()
 
         assert model_type in ['mlp', 'encoder'], 'model_type currently supports only "mlp" or "encoder"'
         model_class = MLPLayer if model_type == 'mlp' else MLPLayerEncoder
         self.mlp_model = model_class(input_dim, output_dim, hidden_dims, batch_norm=batch_norm, dropout=dropout,
-                                     activation='identity')
+                                     activation='identity', recurrent_split_dim=recurrent_split_dim)
         self.FeatureSelector = GatingNet(input_dim, gating_net_hidden_dims, sigma,
                                          device, activation=activation, batch_norm=batch_norm,
                                          dropout=dropout)
@@ -167,18 +167,18 @@ class SoftThreshRegressionModel(MLPModel, ModelIOKeysMixin):
 
 class LSPINRegressionModel(LSPINModel, ModelIOKeysMixin):
     def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
-                 dropout=None, activation='relu', sigma=1.0, lam=0.1):
+                 dropout=None, activation='relu', sigma=1.0, lam=0.1, recurrent_split_dim=None):
         super().__init__(input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
-                         activation, sigma, lam)
+                         activation, sigma, lam, recurrent_split_dim=None)
         self.loss = nn.MSELoss()
 
 
 class LSPINClassificationModel(LSPINModel, ModelIOKeysMixin):
     def __init__(self, input_dim, output_dim, hidden_dims, gating_net_hidden_dims,
                  device, batch_norm=None, dropout=None,
-                 activation='relu', sigma=1.0, lam=0.1):
+                 activation='relu', sigma=1.0, lam=0.1, recurrent_split_dim=None):
         super().__init__(input_dim, output_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
-                         activation, sigma, lam)
+                         activation, sigma, lam, recurrent_split_dim=recurrent_split_dim)
         self.softmax = nn.Softmax()
         self.loss = nn.CrossEntropyLoss()
 
@@ -190,9 +190,9 @@ class LSPINClassificationModel(LSPINModel, ModelIOKeysMixin):
 
 class LSPINEncoderModel(LSPINModel, ModelIOKeysMixin):
     def __init__(self, input_dim, encoding_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm=None,
-                 dropout=None, activation='relu', sigma=1.0, lam=0.1):
+                 dropout=None, activation='relu', sigma=1.0, lam=0.1, recurrent_split_dim=None):
         super().__init__(input_dim, encoding_dim, hidden_dims, gating_net_hidden_dims, device, batch_norm, dropout,
-                         activation, sigma, lam, model_type='encoder')
+                         activation, sigma, lam, model_type='encoder', recurrent_split_dim=recurrent_split_dim)
         self.loss = nn.MSELoss()
 
 
