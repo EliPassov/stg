@@ -69,6 +69,18 @@ class GatingNet(nn.Module):
         ''' Gaussian CDF. '''
         return 0.5 * (1 + torch.erf(x / math.sqrt(2))) 
 
+    def similarity_loss(self, mu):
+        mu = self.hard_sigmoid(mu)
+        mu_T = mu.T
+
+        mu_norm = torch.linalg.norm(mu, dim=1, keepdim=True)  # Size (n, 1).
+        mu_T_norm = torch.linalg.norm(mu_T, dim=0, keepdim=True)  # Size (1, b).
+
+        # Distance matrix of size (b, n).
+        cosine_similarity = ((mu @ mu_T) / (mu_norm @ mu_T_norm + 1e-6)).T
+        normalized = (cosine_similarity - torch.eye(mu.size(0), device=mu.device)).mean()
+        return normalized
+
     def _apply(self, fn):
         super(GatingNet, self)._apply(fn)
         self.noise = fn(self.noise)

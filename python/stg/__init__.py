@@ -1,1 +1,1 @@
-from .stg import STG
+from .stg import STG, train_net_to_output_float

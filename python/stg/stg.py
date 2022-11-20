@@ -14,6 +14,7 @@ from .meter import GroupMeters
 from .models import STGClassificationModel, STGRegressionModel, MLPClassificationModel, MLPRegressionModel, \
     STGCoxModel, MLPCoxModel, L1RegressionModel, SoftThreshRegressionModel, L1GateRegressionModel,  \
     LSPINRegressionModel, LSPINClassificationModel, LSPINEncoderModel
+from .unet import GatedUnet
 from .utils import get_optimizer, as_tensor, as_float, as_numpy, as_cpu, SimpleDataset, FastTensorDataLoader, \
     probe_infnan
 
@@ -151,6 +152,15 @@ class STG(object):
                     raise NotImplementedError('Encoding is only implemented for LSPIN model')
             else:
                 raise NotImplementedError('Encoding is only implemented for LSPIN model')
+        elif task_type == 'encoding_unet':
+            self.metric = nn.MSELoss()
+            self.tensor_names = ('input', 'label')
+            # print('lam sim', self.extra_args.get('lam_sim', 0.0), 'noise sigma', self.extra_args.get('noise_sigma', 0.0))
+            return GatedUnet(in_channels=1, hidden_dims=hidden_dims,
+                             gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'], device=self.device,
+                             sigma=sigma, lam=lam, lam_sim=self.extra_args.get('lam_sim', 0.0),
+                             feature_selection=feature_selection, noise_sigma=self.extra_args.get('noise_sigma', 0.0))
+
         elif task_type == 'cox':
             self.metric = PartialLogLikelihood
             self.tensor_names = ('X', 'E', 'T')
@@ -199,7 +209,7 @@ class STG(object):
                         y.float().to(self.device), tensor_names=self.tensor_names,
                         batch_size=self.batch_size, shuffle=shuffle)
 
-        elif self.task_type == 'encoding':
+        elif self.task_type in ['encoding', 'encoding_unet']:
         # TODO: Refactor to account for no y
             data_loader = FastTensorDataLoader(X.to(self.device), X.to(self.device), tensor_names=self.tensor_names,
                         batch_size=self.batch_size, shuffle=shuffle)
@@ -286,7 +296,7 @@ class STG(object):
             result = metric(pred['logits'], self._model._get_label(feed_dict))
         elif self.task_type == 'regression':
             result = metric(pred['pred'], self._model._get_label(feed_dict))
-        elif self.task_type == 'encoding':
+        elif self.task_type in ['encoding', 'encoding_unet']:
             result = metric(pred['pred'], self._model._get_label(feed_dict))
         elif self.task_type == 'cox':
             result = metric(pred['logits'], self._model._get_fail_indicator(feed_dict), 'noties') 
@@ -355,3 +365,22 @@ class STG(object):
             return self._model.get_gates(mode, x)
         else:
             return self._model.get_gates(mode)
+
+
+def train_net_to_output_float(net: nn.Module, output_values: float, device:str, input_shape:tuple, epochs: int = 10, lr: float = 0.01):
+    optimizer = torch.optim.SGD(params=net.parameters(), lr=lr, momentum=0.9)
+    sample_target = net(torch.randn(input_shape, device=device))[0]
+    target = torch.ones_like(sample_target, device=device).detach() * output_values
+    criterion = nn.MSELoss()
+
+    print_range = epochs // 10
+
+    for e in range(epochs):
+        input = torch.randn(input_shape, device=device)
+        output = net(input)[0]
+        loss = criterion(output, target)
+        if e % print_range == 0 and e>0:
+            print(loss.item(), output.mean().item())
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
