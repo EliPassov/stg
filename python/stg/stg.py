@@ -156,10 +156,12 @@ class STG(object):
             self.metric = nn.MSELoss()
             self.tensor_names = ('input', 'label')
             # print('lam sim', self.extra_args.get('lam_sim', 0.0), 'noise sigma', self.extra_args.get('noise_sigma', 0.0))
+            feature_selection = "none" if feature_selection is None else feature_selection
             return GatedUnet(in_channels=1, hidden_dims=hidden_dims,
                              gating_net_hidden_dims=self.extra_args['gating_net_hidden_dims'], device=self.device,
                              sigma=sigma, lam=lam, lam_sim=self.extra_args.get('lam_sim', 0.0),
-                             feature_selection=feature_selection, noise_sigma=self.extra_args.get('noise_sigma', 0.0))
+                             feature_selection=feature_selection, noise_sigma=self.extra_args.get('noise_sigma', 0.0),
+                             include_skip_connection=self.extra_args.get('include_skip_connection', False))
 
         elif task_type == 'cox':
             self.metric = PartialLogLikelihood

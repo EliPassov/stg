@@ -42,7 +42,7 @@ class FeatureSelector(nn.Module):
 
 class GatingNet(nn.Module):
     def __init__(self, input_dim, gating_net_hidden_dims, sigma,
-                device, activation, batch_norm, dropout):
+                device, activation, batch_norm, dropout, pooling=False):
         super(GatingNet, self).__init__()
         #self.mu = torch.nn.Parameter(0.01*torch.randn(input_dim, ), requires_grad=True)
         self.net = MLPLayer(input_dim, input_dim, gating_net_hidden_dims,
@@ -51,23 +51,35 @@ class GatingNet(nn.Module):
         self.noise = torch.randn(input_dim) 
         self.sigma = sigma
         self.device = device
+        self.pooling = None
+        if pooling:
+            self.pooling = lambda x: x.mean(-1).mean(-1)
 
     def calc_mu(self, x):
+        if self.pooling is not None:
+            x = self.pooling(x)
         return self.net(x)
     
-    def forward(self, prev_x):
+    def forward(self, prev_x, include_losses=False):
         mu = self.calc_mu(prev_x)
         z = mu + self.sigma*self.noise.normal_()*self.training 
         stochastic_gate = self.hard_sigmoid(z)
+        if self.pooling:
+            stochastic_gate = stochastic_gate.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, prev_x.size(2), prev_x.size(3))
         new_x = prev_x * stochastic_gate
-        return new_x, mu
+        if include_losses:
+            return new_x, mu, stochastic_gate, (self.regularizer_loss(mu), self.similarity_loss(mu))
+        return new_x, mu, stochastic_gate, None
     
     def hard_sigmoid(self, x):
         return torch.clamp(x+0.5, 0.0, 1.0)
 
     def regularizer(self, x):
         ''' Gaussian CDF. '''
-        return 0.5 * (1 + torch.erf(x / math.sqrt(2))) 
+        return 0.5 * (1 + torch.erf(x / math.sqrt(2)))
+
+    def regularizer_loss(self, mu):
+        return torch.mean(self.regularizer((mu + 0.5) / self.sigma))
 
     def similarity_loss(self, mu):
         mu = self.hard_sigmoid(mu)
@@ -197,11 +209,13 @@ class MLPLayer(nn.Module):
 
 class MLPLayerEncoder(nn.Module):
     def __init__(self, input_dim, encoding_dim, hidden_dims, batch_norm=None, dropout=None, activation='relu',
-                 flatten=True, recurrent_split_dim=None):
+                 flatten=True, recurrent_split_dim=None, feature_selector: nn.Module = None):
         super().__init__()
 
         assert (recurrent_split_dim is None) or (recurrent_split_dim > 1), "recurrent_split_dim must be None or int > 1"
         self.recurrent = recurrent_split_dim is not None
+        self.feature_selector = feature_selector
+        self.last_mu = None
 
         if hidden_dims is None:
             hidden_dims = []
@@ -258,6 +272,9 @@ class MLPLayerEncoder(nn.Module):
             input = input.view(input.size(0), -1)
 
         encoding = self.encode(input)
+        if self.feature_selector is not None:
+            encoding, mu = self.feature_selector(encoding)
+            self.last_mu = mu
         out = self.decode(encoding)
 
         return out
