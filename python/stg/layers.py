@@ -1,11 +1,12 @@
 import inspect
 import math
 from types import LambdaType
+from random import randint
 
 import torch
 import torch.nn as nn
 
-from .utils import get_batcnnorm, get_dropout, get_activation
+from utils import get_batcnnorm, get_dropout, get_activation
 
 
 __all__ = [
@@ -41,8 +42,8 @@ class FeatureSelector(nn.Module):
 
 
 class GatingNet(nn.Module):
-    def __init__(self, input_dim, gating_net_hidden_dims, sigma,
-                device, activation, batch_norm, dropout, pooling=False):
+    def __init__(self, input_dim, gating_net_hidden_dims, sigma, device, activation, batch_norm, dropout, pooling=False,
+                 gumble=False, fixed_gates=None, mixed_weights=None):
         super(GatingNet, self).__init__()
         #self.mu = torch.nn.Parameter(0.01*torch.randn(input_dim, ), requires_grad=True)
         self.net = MLPLayer(input_dim, input_dim, gating_net_hidden_dims,
@@ -54,25 +55,54 @@ class GatingNet(nn.Module):
         self.pooling = None
         if pooling:
             self.pooling = lambda x: x.mean(-1).mean(-1)
+        self.fixed_gates = fixed_gates
+        self.mixed_weights = mixed_weights
+        self.gumble = gumble
 
     def calc_mu(self, x):
         if self.pooling is not None:
             x = self.pooling(x)
         return self.net(x)
     
-    def forward(self, prev_x, include_losses=False):
-        mu = self.calc_mu(prev_x)
-        z = mu + self.sigma*self.noise.normal_()*self.training 
-        stochastic_gate = self.hard_sigmoid(z)
-        if self.pooling:
+    def forward(self, prev_x, include_losses=False, fixed_gates=None):
+        if fixed_gates is not None or self.fixed_gates is not None:
+            stochastic_gate = fixed_gates if fixed_gates is not None else self.fixed_gates
+            # Fix later to mu = None , requires fixing inference not to compute loss
+            mu = self.calc_mu(prev_x)
+            if self.mixed_weights is not None:
+                z = mu + self.sigma * self.noise.normal_() * self.training
+                computed_gate = self.hard_sigmoid(z)
+                (p1, p2) = self.mixed_weights
+                # geometric average of the gates
+                # stochastic_gate = (stochastic_gate ** p1 * computed_gate ** p2) ** (1 / (p1 + p2))
+                stochastic_gate = (stochastic_gate * p1 + computed_gate * p2) / (p1 + p2)
+        else:
+            mu = self.calc_mu(prev_x)
+            z = mu + self.sigma*self.noise.normal_() * self.training
+            stochastic_gate = self.hard_sigmoid(z)
+        gate_stats = stochastic_gate.sum().item() / torch.numel(stochastic_gate)
+        if self.pooling is not None:
             stochastic_gate = stochastic_gate.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, prev_x.size(2), prev_x.size(3))
         new_x = prev_x * stochastic_gate
         if include_losses:
-            return new_x, mu, stochastic_gate, (self.regularizer_loss(mu), self.similarity_loss(mu))
+            return new_x, mu, stochastic_gate, (self.regularizer_loss(mu), self.similarity_loss(mu), gate_stats)
         return new_x, mu, stochastic_gate, None
     
     def hard_sigmoid(self, x):
-        return torch.clamp(x+0.5, 0.0, 1.0)
+        if self.gumble:
+            out = torch.sigmoid(x)
+            if True: #self.hard_gating:
+                # create 0.5 constants to compare sigmoid to
+                half_padding = 0.5 * torch.ones_like(out, requires_grad=True)
+                # combine together on the last axis
+                padded = torch.cat([half_padding.unsqueeze(-1), out.unsqueeze(-1)], -1)
+                # get a binary result which one is bigger
+                max_ind = padded.argmax(-1).float()
+                # trick to enable gradient
+                gating = (max_ind - out).detach() + out
+            return gating
+        else:
+            return torch.clamp(x+0.5, 0.0, 1.0)
 
     def regularizer(self, x):
         ''' Gaussian CDF. '''
@@ -90,7 +120,16 @@ class GatingNet(nn.Module):
 
         # Distance matrix of size (b, n).
         cosine_similarity = ((mu @ mu_T) / (mu_norm @ mu_T_norm + 1e-6)).T
-        normalized = (cosine_similarity - torch.eye(mu.size(0), device=mu.device)).mean()
+        normalized = (cosine_similarity - torch.eye(mu.size(0), device=mu.device))
+
+        adjustment_weights_mats = getattr(self, 'adjustment_weights_mats', None)
+        # hacky_second_half_duplicate
+        if adjustment_weights_mats is not None and adjustment_weights_mats[0].size(0) == normalized.size(0):
+            r_ind = randint(0, len(adjustment_weights_mats)-1)
+            adjustment_weights = adjustment_weights_mats[r_ind]
+            normalized = normalized * adjustment_weights
+
+        normalized = normalized.mean()
         return normalized
 
     def _apply(self, fn):
@@ -278,3 +317,49 @@ class MLPLayerEncoder(nn.Module):
         out = self.decode(encoding)
 
         return out
+
+
+def create_augmentation_weights_matrix(batch_size, repeat_ratio, extra_shift=0,multiplier=-1):
+    assert (batch_size % repeat_ratio) == 0
+    block = batch_size // repeat_ratio
+    mat = torch.zeros(batch_size, batch_size)
+    for i in range(1, repeat_ratio):
+        shift = i*block + extra_shift
+        aa = torch.roll(torch.eye(batch_size),shift,1) * multiplier
+        aa[-shift:,:shift] = 0
+        mat = mat + aa
+    return mat + mat.T
+
+
+def create_pos_neg_wieghts_matrices(batch_size, device):
+    base_weights = create_augmentation_weights_matrix(batch_size,2)
+    mats = []
+    permutes = []
+    half_batch = batch_size // 2
+    for i in range(batch_size):
+        permutes.append(torch.randperm(batch_size-2))
+    for j in range(batch_size - 2):
+        weights_mat = base_weights.clone()
+        for i in range(batch_size):
+            val_permute = int(permutes[i][j])
+            # shift by 0, 1 or 2 depdending if before between or after main diagonal and -1 (their order changes in the top and buttom half)
+            if i < half_batch:
+                if val_permute >= i:
+                    val_permute += 1
+                if val_permute >= i + half_batch:
+                    val_permute += 1
+            else:
+                if val_permute >= i - half_batch:
+                    val_permute += 1
+                if val_permute >= i:
+                    val_permute += 1
+
+            weights_mat[i, val_permute] = 1
+        mats.append(weights_mat.to(device))
+    return mats
+
+
+if __name__ == '__main__':
+    aaa = create_pos_neg_wieghts_matrices(8, "cpu")
+    print(aaa[1])
+    print(aaa[2])

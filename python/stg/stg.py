@@ -194,7 +194,7 @@ class STG(object):
                 meters.update(CI=ci)
             meters.update(monitors)
 
-    def get_dataloader(self, X, y, shuffle, is_tensor_input=False):
+    def get_dataloader(self, X, y, shuffle, is_tensor_input=False, transforms=None):
         if not is_tensor_input:
             if self.task_type == 'cox':
                 raise 'Task cox does not support tensor input for y vector'
@@ -204,17 +204,17 @@ class STG(object):
         if self.task_type == 'classification':
             data_loader = FastTensorDataLoader(X.to(self.device),
                         y.long().to(self.device), tensor_names=self.tensor_names,
-                        batch_size=self.batch_size, shuffle=shuffle)
+                        batch_size=self.batch_size, shuffle=shuffle, transforms=transforms)
 
         elif self.task_type == 'regression':
             data_loader = FastTensorDataLoader(X.to(self.device),
                         y.float().to(self.device), tensor_names=self.tensor_names,
-                        batch_size=self.batch_size, shuffle=shuffle)
+                        batch_size=self.batch_size, shuffle=shuffle, transforms=transforms)
 
         elif self.task_type in ['encoding', 'encoding_unet']:
         # TODO: Refactor to account for no y
             data_loader = FastTensorDataLoader(X.to(self.device), X.to(self.device), tensor_names=self.tensor_names,
-                        batch_size=self.batch_size, shuffle=shuffle)
+                        batch_size=self.batch_size, shuffle=shuffle, transforms=transforms)
 
         elif self.task_type == 'cox':
             assert isinstance(y, dict)
@@ -222,16 +222,16 @@ class STG(object):
                         torch.from_numpy(y['E']).float().to(self.device),
                         torch.from_numpy(y['T']).float().to(self.device),
                         tensor_names=self.tensor_names,
-                        batch_size=self.batch_size, shuffle=shuffle)
+                        batch_size=self.batch_size, shuffle=shuffle, transforms=transforms)
 
         else:
             raise NotImplementedError()
 
         return data_loader 
 
-    def fit(self, X, y, nr_epochs, valid_X=None, valid_y=None, 
-        verbose=True, meters=None, early_stop=None, print_interval=1, shuffle=False, is_tensor_input=False):
-        data_loader = self.get_dataloader(X, y, shuffle, is_tensor_input)
+    def fit(self, X, y, nr_epochs, valid_X=None, valid_y=None, verbose=True, meters=None, early_stop=None,
+            print_interval=1, shuffle=False, is_tensor_input=False, transforms=None):
+        data_loader = self.get_dataloader(X, y, shuffle, is_tensor_input, transforms=transforms)
 
         if valid_X is not None:
             val_data_loader = self.get_dataloader(valid_X, valid_y, shuffle, is_tensor_input)

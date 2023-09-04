@@ -1,3 +1,5 @@
+import sys
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -43,7 +45,7 @@ class FastTensorDataLoader:
     the dataset and calls cat (slow).
     Source: https://discuss.pytorch.org/t/dataloader-much-slower-than-manual-batching/27014/6
     """
-    def __init__(self, *tensors, tensor_names, batch_size=32, shuffle=False):
+    def __init__(self, *tensors, tensor_names, batch_size=32, shuffle=False, transforms=None):
         """
         Initialize a FastTensorDataLoader.
         :param *tensors: tensors to store. Must have the same length @ dim 0.
@@ -60,6 +62,8 @@ class FastTensorDataLoader:
         self.dataset_len = self.tensors[0].shape[0]
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.transforms = transforms
+        self.duplicate = False
 
         # Calculate # batches
         n_batches, remainder = divmod(self.dataset_len, self.batch_size)
@@ -78,9 +82,18 @@ class FastTensorDataLoader:
         if self.i >= self.dataset_len:
             raise StopIteration
         batch = {}
+        duplicate = getattr(self, 'duplicate', False)
         for k in range(len(self.tensor_names)):
-            batch.update({self.tensor_names[k]: self.tensors[k][self.i:self.i+self.batch_size]})
-        self.i += self.batch_size
+            if duplicate:
+                tensors_to_add = self.tensors[k][self.i:self.i+self.batch_size//2]
+                tensors_to_add = torch.cat([tensors_to_add, tensors_to_add], dim=0)
+            else:
+                tensors_to_add = self.tensors[k][self.i:self.i+self.batch_size]
+            if self.transforms is not None:
+                tensors_to_add = self.transforms(tensors_to_add)
+            batch.update({self.tensor_names[k]: tensors_to_add})
+
+        self.i += self.batch_size // 2 if duplicate else self.batch_size
         return batch
         
 
@@ -209,16 +222,28 @@ def get_optimizer(optimizer, model, *args, **kwargs):
     
 
 def stmap(func, iterable):
-    if isinstance(iterable, six.string_types):
-        return func(iterable)
-    elif isinstance(iterable, (collections.Sequence, collections.UserList)):
-        return [stmap(func, v) for v in iterable]
-    elif isinstance(iterable, collections.Set):
-        return {stmap(func, v) for v in iterable}
-    elif isinstance(iterable, (collections.Mapping, collections.UserDict)):
-        return {k: stmap(func, v) for k, v in iterable.items()}
+    if sys.version_info >= (3, 10):
+        if isinstance(iterable, six.string_types):
+            return func(iterable)
+        elif isinstance(iterable, (collections.abc.Sequence, collections.UserList)):
+            return [stmap(func, v) for v in iterable]
+        elif isinstance(iterable, set):
+            return {stmap(func, v) for v in iterable}
+        elif isinstance(iterable, (collections.abc.Mapping, collections.UserDict)):
+            return {k: stmap(func, v) for k, v in iterable.items()}
+        else:
+            return func(iterable)
     else:
-        return func(iterable)
+        if isinstance(iterable, six.string_types):
+            return func(iterable)
+        elif isinstance(iterable, (collections.Sequence, collections.UserList)):
+            return [stmap(func, v) for v in iterable]
+        elif isinstance(iterable, collections.Set):
+            return {stmap(func, v) for v in iterable}
+        elif isinstance(iterable, (collections.Mapping, collections.UserDict)):
+            return {k: stmap(func, v) for k, v in iterable.items()}
+        else:
+            return func(iterable)
 
 
 def _as_tensor(o):

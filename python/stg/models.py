@@ -75,7 +75,7 @@ class LSPINModel(nn.Module):
         self.sigma = self.FeatureSelector.sigma
 
     def forward(self, feed_dict):
-        x, mu = self.FeatureSelector(self._get_input(feed_dict))
+        x, mu, _, _ = self.FeatureSelector(self._get_input(feed_dict))
         pred = self.mlp_model.forward(x)
         if self.training:
             loss = self.loss(pred, self._get_label(feed_dict))
